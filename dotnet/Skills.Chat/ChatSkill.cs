@@ -1,20 +1,23 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.AI.TextCompletion;
 using Microsoft.SemanticKernel.Orchestration;
 using Microsoft.SemanticKernel.SkillDefinition;
 using Microsoft.SemanticKernel.TemplateEngine;
+using Microsoft.SemanticKernel.Skills.Chat.Models;
+using Microsoft.SemanticKernel.Skills.Chat.Options;
+using Microsoft.SemanticKernel.Skills.Chat.Planner;
+using Microsoft.SemanticKernel.Skills.Chat.Storage;
+using System.Threading.Tasks;
+using System.Linq;
+using System;
+using System.Collections.Generic;
 
 namespace Microsoft.SemanticKernel.Skills.Chat;
 
@@ -34,11 +37,6 @@ public class ChatSkill
     private readonly ChatMessageRepository _chatMessageRepository;
 
     /// <summary>
-    /// A repository to save and retrieve chat sessions.
-    /// </summary>
-    private readonly ChatSessionRepository _chatSessionRepository;
-
-    /// <summary>
     /// Settings containing prompt texts.
     /// </summary>
     private readonly PromptsOptions _promptOptions;
@@ -53,28 +51,26 @@ public class ChatSkill
     /// </summary>
     private readonly DocumentMemorySkill _documentMemorySkill;
 
-    /// <summary>
-    /// A skill instance to acquire external information.
-    /// </summary>
-    private readonly ExternalInformationSkill _externalInformationSkill;
+    ///// <summary>
+    ///// A skill instance to acquire external information.
+    ///// </summary>
+    //private readonly ExternalInformationSkill _externalInformationSkill;
 
     /// <summary>
     /// Create a new instance of <see cref="ChatSkill"/>.
     /// </summary>
     public ChatSkill(
         IKernel kernel,
+        ChatPlanner planner,
         ChatMessageRepository chatMessageRepository,
-        ChatSessionRepository chatSessionRepository,
-        IOptions<PromptsOptions> promptOptions,
         IOptions<DocumentMemoryOptions> documentImportOptions,
-        CopilotChatPlanner planner,
+        IOptions<PromptsOptions> promptOptions,
         ILogger<ChatSkill>? logger = null)
     {
         this._kernel = kernel;
         this._logger = logger ?? new NullLogger<ChatSkill>();
 
         this._chatMessageRepository = chatMessageRepository;
-        this._chatSessionRepository = chatSessionRepository;
         this._promptOptions = promptOptions.Value;
 
         this._semanticChatMemorySkill = new SemanticChatMemorySkill(
@@ -82,10 +78,9 @@ public class ChatSkill
         this._documentMemorySkill = new DocumentMemorySkill(
             promptOptions,
             documentImportOptions);
-        this._externalInformationSkill = new ExternalInformationSkill(
-            promptOptions,
-            planner);
-
+        //this._externalInformationSkill = new ExternalInformationSkill(
+        //    promptOptions,
+        //    planner);
     }
 
     /// <summary>
@@ -123,7 +118,7 @@ public class ChatSkill
         var result = await completionFunction.InvokeAsync(
             intentExtractionContext,
             settings: this.CreateIntentCompletionSettings()
-        );
+        ).ConfigureAwait(false);
 
         if (result.ErrorOccurred)
         {
@@ -167,7 +162,7 @@ public class ChatSkill
         var result = await completionFunction.InvokeAsync(
             audienceExtractionContext,
             settings: this.CreateIntentCompletionSettings()
-        );
+        ).ConfigureAwait(false);
 
         if (result.ErrorOccurred)
         {
@@ -192,7 +187,7 @@ public class ChatSkill
         var chatId = context["chatId"];
         var tokenLimit = int.Parse(context["tokenLimit"], new NumberFormatInfo());
 
-        var messages = await this._chatMessageRepository.FindByChatIdAsync(chatId);
+        var messages = await this._chatMessageRepository.FindByChatIdAsync(chatId).ConfigureAwait(false);
         var sortedMessages = messages.OrderByDescending(m => m.Timestamp);
 
         var remainingToken = tokenLimit;
@@ -263,7 +258,7 @@ public class ChatSkill
         // Save this new message to memory such that subsequent chat responses can use it
         try
         {
-            await this.SaveNewMessageAsync(message, userId, userName, chatId, messageType);
+            await this.SaveNewMessageAsync(message, userId, userName, chatId, messageType).ConfigureAwait(false);
         }
         catch (Exception ex) when (!ex.IsCriticalException())
         {
@@ -283,12 +278,12 @@ public class ChatSkill
             && !string.IsNullOrWhiteSpace(planJson)
             && context.Variables.TryGetValue("responseMessageId", out string? messageId))
         {
-            await this.UpdateResponseAsync(planJson, messageId);
+            await this.UpdateResponseAsync(planJson, messageId).ConfigureAwait(false);
         }
 
         var response = chatContext.Variables.ContainsKey("userCancelledPlan")
             ? "I am sorry the plan did not meet your goals."
-            : await this.GetChatResponseAsync(chatContext);
+            : await this.GetChatResponseAsync(chatContext).ConfigureAwait(false);
 
         if (chatContext.ErrorOccurred)
         {
@@ -306,7 +301,7 @@ public class ChatSkill
         // Save this response to memory such that subsequent chat responses can use it
         try
         {
-            ChatMessage botMessage = await this.SaveNewResponseAsync(response, prompt, chatId);
+            ChatMessage botMessage = await this.SaveNewResponseAsync(response, prompt, chatId).ConfigureAwait(false);
             context.Variables.Set("messageId", botMessage.Id);
             context.Variables.Set("messageType", ((int)botMessage.Type).ToString(CultureInfo.InvariantCulture));
         }
@@ -338,14 +333,14 @@ public class ChatSkill
     private async Task<string> GetChatResponseAsync(SKContext chatContext)
     {
         // 0. Get the audience
-        var audience = await this.GetAudienceAsync(chatContext);
+        var audience = await this.GetAudienceAsync(chatContext).ConfigureAwait(false);
         if (chatContext.ErrorOccurred)
         {
             return string.Empty;
         }
 
         // 1. Extract user intent from the conversation history.
-        var userIntent = await this.GetUserIntentAsync(chatContext);
+        var userIntent = await this.GetUserIntentAsync(chatContext).ConfigureAwait(false);
         if (chatContext.ErrorOccurred)
         {
             return string.Empty;
@@ -356,21 +351,21 @@ public class ChatSkill
 
         // 3. Acquire external information from planner
         var externalInformationTokenLimit = (int)(remainingToken * this._promptOptions.ExternalInformationContextWeight);
-        var planResult = await this.AcquireExternalInformationAsync(chatContext, userIntent, externalInformationTokenLimit);
+        var planResult = await this.AcquireExternalInformationAsync(chatContext, userIntent, externalInformationTokenLimit).ConfigureAwait(false);
         if (chatContext.ErrorOccurred)
         {
             return string.Empty;
         }
 
-        // If plan is suggested, send back to user for approval before running
-        if (this._externalInformationSkill.ProposedPlan != null)
-        {
-            return JsonSerializer.Serialize<ProposedPlan>(this._externalInformationSkill.ProposedPlan);
-        }
+        //// If plan is suggested, send back to user for approval before running
+        //if (this._externalInformationSkill.ProposedPlan != null)
+        //{
+        //    return JsonSerializer.Serialize<ProposedPlan>(this._externalInformationSkill.ProposedPlan);
+        //}
 
         // 4. Query relevant semantic memories
         var chatMemoriesTokenLimit = (int)(remainingToken * this._promptOptions.MemoriesResponseContextWeight);
-        var chatMemories = await this.QueryChatMemoriesAsync(chatContext, userIntent, chatMemoriesTokenLimit);
+        var chatMemories = await this.QueryChatMemoriesAsync(chatContext, userIntent, chatMemoriesTokenLimit).ConfigureAwait(false);
         if (chatContext.ErrorOccurred)
         {
             return string.Empty;
@@ -378,7 +373,7 @@ public class ChatSkill
 
         // 5. Query relevant document memories
         var documentContextTokenLimit = (int)(remainingToken * this._promptOptions.DocumentContextWeight);
-        var documentMemories = await this.QueryDocumentsAsync(chatContext, userIntent, documentContextTokenLimit);
+        var documentMemories = await this.QueryDocumentsAsync(chatContext, userIntent, documentContextTokenLimit).ConfigureAwait(false);
         if (chatContext.ErrorOccurred)
         {
             return string.Empty;
@@ -390,7 +385,7 @@ public class ChatSkill
         var chatContextTextTokenCount = remainingToken - Utilities.TokenCount(chatContextText);
         if (chatContextTextTokenCount > 0)
         {
-            var chatHistory = await this.GetChatHistoryAsync(chatContext, chatContextTextTokenCount);
+            var chatHistory = await this.GetChatHistoryAsync(chatContext, chatContextTextTokenCount).ConfigureAwait(false);
             if (chatContext.ErrorOccurred)
             {
                 return string.Empty;
@@ -406,7 +401,7 @@ public class ChatSkill
         var promptRenderer = new PromptTemplateEngine();
         var renderedPrompt = await promptRenderer.RenderAsync(
             this._promptOptions.SystemChatPrompt,
-            chatContext);
+            chatContext).ConfigureAwait(false);
 
         var completionFunction = this._kernel.CreateSemanticFunction(
             renderedPrompt,
@@ -416,7 +411,7 @@ public class ChatSkill
         chatContext = await completionFunction.InvokeAsync(
             context: chatContext,
             settings: this.CreateChatResponseCompletionSettings()
-        );
+        ).ConfigureAwait(false);
 
         // Allow the caller to view the prompt used to generate the response
         chatContext.Variables.Set("prompt", renderedPrompt);
@@ -446,7 +441,7 @@ public class ChatSkill
             context.CancellationToken
         );
 
-        var audience = await this.ExtractAudienceAsync(audienceContext);
+        var audience = await this.ExtractAudienceAsync(audienceContext).ConfigureAwait(false);
 
         // Propagate the error
         if (audienceContext.ErrorOccurred)
@@ -478,7 +473,7 @@ public class ChatSkill
                 context.CancellationToken
             );
 
-            userIntent = await this.ExtractUserIntentAsync(intentContext);
+            userIntent = await this.ExtractUserIntentAsync(intentContext).ConfigureAwait(false);
             // Propagate the error
             if (intentContext.ErrorOccurred)
             {
@@ -613,12 +608,6 @@ public class ChatSkill
     /// <param name="type">Type of the message</param>
     private async Task<ChatMessage> SaveNewMessageAsync(string message, string userId, string userName, string chatId, string type)
     {
-        // Make sure the chat exists.
-        if (!await this._chatSessionRepository.TryFindByIdAsync(chatId, v => _ = v))
-        {
-            throw new ArgumentException("Chat session does not exist.");
-        }
-
         var chatMessage = new ChatMessage(
             userId,
             userName,
@@ -631,7 +620,7 @@ public class ChatSkill
                 ? typeAsEnum
                 : ChatMessage.ChatMessageType.Message);
 
-        await this._chatMessageRepository.CreateAsync(chatMessage);
+        await this._chatMessageRepository.CreateAsync(chatMessage).ConfigureAwait(false);
         return chatMessage;
     }
 
@@ -644,14 +633,8 @@ public class ChatSkill
     /// <returns>The created chat message.</returns>
     private async Task<ChatMessage> SaveNewResponseAsync(string response, string prompt, string chatId)
     {
-        // Make sure the chat exists.
-        if (!await this._chatSessionRepository.TryFindByIdAsync(chatId, v => _ = v))
-        {
-            throw new ArgumentException("Chat session does not exist.");
-        }
-
         var chatMessage = ChatMessage.CreateBotResponseMessage(chatId, response, prompt);
-        await this._chatMessageRepository.CreateAsync(chatMessage);
+        await this._chatMessageRepository.CreateAsync(chatMessage).ConfigureAwait(false);
 
         return chatMessage;
     }
@@ -664,10 +647,10 @@ public class ChatSkill
     private async Task UpdateResponseAsync(string updatedResponse, string messageId)
     {
         // Make sure the chat exists.
-        var chatMessage = await this._chatMessageRepository.FindByIdAsync(messageId);
+        var chatMessage = await this._chatMessageRepository.FindByIdAsync(messageId).ConfigureAwait(false);
         chatMessage.Content = updatedResponse;
 
-        await this._chatMessageRepository.UpsertAsync(chatMessage);
+        await this._chatMessageRepository.UpsertAsync(chatMessage).ConfigureAwait(false);
     }
 
     /// <summary>

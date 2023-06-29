@@ -2,7 +2,7 @@
 
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using Microsoft.SemanticKernel.Service.Options;
+using Microsoft.SemanticKernel.Skills.Chat.Validation;
 
 namespace Microsoft.SemanticKernel.Skills.Chat.Options;
 

@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.SemanticKernel.Skills.Chat.Models;
 
@@ -38,7 +39,7 @@ public class ChatMessageRepository : Repository<ChatMessage>
     public async Task<ChatMessage> FindLastByChatIdAsync(string chatId)
     {
         var chatMessages = await this.FindByChatIdAsync(chatId).ConfigureAwait(false);
-        var first = chatMessages.MaxBy(e => e.Timestamp);
+        var first = chatMessages.Max(e => e.Timestamp);
         return first ?? throw new KeyNotFoundException($"No messages found for chat '{chatId}'.");
     }
 }
